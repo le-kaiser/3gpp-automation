@@ -6,12 +6,13 @@ import os
 from urllib.parse import urljoin
 import docx
 from datetime import datetime
+import re
 
 # --- Configuration ---
 BASE_URL = "https://www.3gpp.org/ftp/tsg_ran/TSG_RAN"
 SPEC_NUMBER = "38.101-1"
 # Using a set for efficient lookups
-CLAUSES_DATABASE = {'4.1', '5.3.2', '7.1a'} 
+CLAUSES_DATABASE = {'4.1', '5.3.2', '7.1a', '5.3.6'}
 OUTPUT_FILE = "approved_clauses.xlsx"
 TEMP_DIR = "temp_files"
 
@@ -174,107 +175,193 @@ def filter_approved_crs(excel_path, spec_number):
         traceback.print_exc()
         return []
 
-def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db):
-    """
-    Downloads the RP archive, extracts it, and searches the R4 doc.
-    """
-    print(f"Processing archive for RP: {rp_number}, searching for doc: {r4_doc_name}")
-    # TODO: Implement ZIP download, extraction, and doc searching
-    return False
-
 def search_docx_for_clauses(docx_path, clauses_db):
     """
-    Searches a .docx file for the 'Clauses Affected' section and checks against the database.
+    Searches a .docx file for all affected clauses and the summary of change.
+    Returns a tuple: (list_of_found_clauses, str_summary_text).
     """
-    print(f"Searching for clauses in: {docx_path}")
-    # TODO: Implement python-docx logic
-    return False
+    try:
+        doc = docx.Document(docx_path)
+        all_text = []
+        for p in doc.paragraphs:
+            all_text.append(p.text)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    all_text.append(cell.text)
 
-def main():
+        found_clauses = set() # Use a set to avoid duplicate clause numbers
+        # First, find all matching clauses
+        for i, text in enumerate(all_text):
+            if 'clauses affected' in text.lower():
+                search_area = text
+                if i + 1 < len(all_text):
+                    search_area += " " + all_text[i+1]
+                
+                potential_clauses = re.findall(r'[\d\w\.-]+\.[\d\w\.-]+', search_area)
+                for clause in potential_clauses:
+                    cleaned_clause = clause.strip('., ')
+                    if cleaned_clause in clauses_db:
+                        found_clauses.add(cleaned_clause)
+
+        if not found_clauses:
+            return ([], None) # Return empty list if no clauses found
+
+        # If clauses were found, now search for the summary
+        summary_text = "Summary not found."
+        summary_started = False
+        summary_parts = []
+        seen_summary_parts = set()
+        stop_headers = ['consequences if not approved', 'clauses affected', 'isolated impact analysis']
+        summary_start_index = -1
+
+        # Find the start of the summary section
+        for i, text in enumerate(all_text):
+            if 'summary of change' in text.lower():
+                summary_start_index = i
+                if ':' in text:
+                    possible_summary = text.split(':', 1)[1].strip()
+                    if possible_summary and possible_summary not in seen_summary_parts:
+                        summary_parts.append(possible_summary)
+                        seen_summary_parts.add(possible_summary)
+                break
+        
+        # If summary header was found, collect text until the next stop header
+        if summary_start_index != -1:
+            for i in range(summary_start_index + 1, len(all_text)):
+                text_content = all_text[i]
+                text_lower = text_content.lower().strip()
+                
+                if any(header in text_lower for header in stop_headers):
+                    break
+                
+                cleaned_text = text_content.strip()
+                if cleaned_text and cleaned_text not in seen_summary_parts:
+                    summary_parts.append(cleaned_text)
+                    seen_summary_parts.add(cleaned_text)
+            
+            if summary_parts:
+                summary_text = "\n".join(summary_parts)
+
+        return (list(found_clauses), summary_text)
+
+    except Exception as e:
+        print(f"Error reading docx file {docx_path}: {e}")
+        return ([], None)
+
+def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db):
     """
-    Main function to orchestrate the automation workflow.
+    Downloads the RP archive, extracts the R4 doc, and triggers the search.
     """
-    print("Starting 3GPP CR automation script...")
+    if not rp_number or not isinstance(rp_number, str):
+        print(f"Invalid rp_number: {rp_number}")
+        return ([], None)
+
+    zip_url = urljoin(docs_url, rp_number + '.zip')
+    zip_local_path = os.path.join(TEMP_DIR, rp_number + '.zip')
+    extracted_docx_path = None
+    result = ([], None)
+
+    try:
+        # Download the zip file
+        print(f"Downloading archive: {zip_url}")
+        with requests.get(zip_url, stream=True) as r:
+            r.raise_for_status()
+            with open(zip_local_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        # Process the downloaded zip file
+        with zipfile.ZipFile(zip_local_path) as z:
+            target_docx_name = r4_doc_name + '.docx'
+            file_in_zip = None
+            # Find a case-insensitive match for the docx file
+            for name in z.namelist():
+                if name.lower().endswith(target_docx_name.lower()):
+                    file_in_zip = name
+                    break
+            
+            if file_in_zip:
+                print(f"Found {file_in_zip} in archive. Extracting...")
+                extracted_docx_path = z.extract(file_in_zip, path=TEMP_DIR)
+                result = search_docx_for_clauses(extracted_docx_path, clauses_db)
+            else:
+                print(f"Could not find {target_docx_name} in {zip_local_path}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to download {zip_url}. Error: {e}")
+    except zipfile.BadZipFile:
+        print(f"Error: {zip_local_path} is not a valid zip file.")
+    except Exception as e:
+        print(f"An unexpected error occurred in process_rp_archive: {e}")
+    finally:
+        # Clean up extracted and downloaded files
+        if extracted_docx_path and os.path.exists(extracted_docx_path):
+            os.remove(extracted_docx_path)
+        if os.path.exists(zip_local_path):
+            os.remove(zip_local_path)
+            
+    return result
+
+def specific_pair_test_and_save(folder_url, target_rp, target_r4):
+    """
+    Runs a focused test on a single pair and saves the result to Excel.
+    """
+    print(f"--- Starting Specific Pair Test & Save on: {folder_url} ---")
+    print(f"Target RP: {target_rp}, Target R4: {target_r4}")
     
-    # Create a temporary directory for downloaded files
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
 
-    # 1. Get all meeting folders, sorted latest first
-    meeting_folders = get_sorted_meeting_folders(BASE_URL)
+    docs_url = urljoin(folder_url + '/', 'Docs/')
+    excel_file_path = find_excel_in_docs(docs_url)
+
+    if not excel_file_path:
+        print("Test Failed: Could not find or download the Excel file.")
+        return
+
+    relevant_crs = filter_approved_crs(excel_file_path, SPEC_NUMBER)
+
+    if not relevant_crs:
+        print("Test Failed: No relevant CRs found in the Excel file.")
+        return
+
+    pair_to_test = None
+    for rp, r4 in relevant_crs:
+        if rp == target_rp and r4 == target_r4:
+            pair_to_test = (rp, r4)
+            break
     
-    results = []
+    if not pair_to_test:
+        print(f"Test Failed: Could not find the specific pair RP={target_rp}, R4={target_r4} in the list.")
+        return
 
-    # 2. Loop through each meeting
-    for folder_url in meeting_folders:
-        # 3. Find the main Excel file in the 'Docs' subfolder
-        # Add a trailing slash for correct urljoin behavior
-        docs_url = urljoin(folder_url + '/', 'Docs/')
-        excel_file_path = find_excel_in_docs(docs_url)
-
-        if not excel_file_path:
-            print(f"No Excel file found in {docs_url}. Skipping.")
-            continue
-
-        # 4. Filter the Excel file for relevant CRs
-        relevant_crs = filter_approved_crs(excel_file_path, SPEC_NUMBER)
-
-        # 5. Process each relevant CR
-        for rp_number, r4_doc_name in relevant_crs:
-            # 6. Find and search the docx within the zip archive
-            is_relevant = process_rp_archive(docs_url, rp_number, r4_doc_name, CLAUSES_DATABASE)
-            
-            if is_relevant:
-                print(f"Found relevant clause in {r4_doc_name} from {rp_number}. Recording.")
-                results.append({
-                    'Meeting_Folder': folder_url,
-                    'RP_Number': rp_number,
-                    'R4_Document': r4_doc_name
-                })
-
-    # 7. Save results to an Excel file
-    if results:
-        print(f"\nSaving {len(results)} found items to {OUTPUT_FILE}")
+    rp_number, r4_doc_name = pair_to_test
+    print(f"\n--- Testing LIVE archive processing for specific pair ---")
+    print(f"Processing RP: {rp_number}, R4: {r4_doc_name}")
+    
+    found_clauses, summary_text = process_rp_archive(docs_url, rp_number, r4_doc_name, CLAUSES_DATABASE)
+    
+    if found_clauses:
+        print(f"\nSuccess! Found matching clause(s) in {r4_doc_name} for RP {rp_number}.")
+        # Create and save the final output file for this single result
+        results = [{
+            'Meeting_Folder': folder_url,
+            'RP_Number': rp_number,
+            'R4_Document': r4_doc_name,
+            'Matching_Clauses': ", ".join(found_clauses),
+            'Summary_of_Change': summary_text
+        }]
+        print(f"\nSaving test result to {OUTPUT_FILE}")
         results_df = pd.DataFrame(results)
         results_df.to_excel(OUTPUT_FILE, index=False)
+        print(f"Successfully saved test result to {os.path.abspath(OUTPUT_FILE)}")
     else:
-        print("\nNo relevant CRs found matching the criteria.")
-
-    print("\nScript finished.")
-
+        print(f"\nTest complete. No matching clauses found in the specified document.")
 
 if __name__ == "__main__":
-    # main() # Temporarily disabled for testing
-    print("--- Live Test: Find and Filter First Available Excel Sheet ---")
-
-    if not os.path.exists(TEMP_DIR):
-        os.makedirs(TEMP_DIR)
-
-    meeting_folders = get_sorted_meeting_folders(BASE_URL)
-    
-    if not meeting_folders:
-        print("Test failed: Could not retrieve any meeting folders.")
-    else:
-        for folder_url in meeting_folders:
-            print(f"\nAttempting to process folder: {folder_url}")
-            docs_url = urljoin(folder_url + '/', 'Docs/')
-            excel_path = find_excel_in_docs(docs_url)
-
-            if excel_path:
-                print(f"Successfully downloaded {excel_path}")
-                approved_crs = filter_approved_crs(excel_path, SPEC_NUMBER)
-                
-                if approved_crs:
-                    print("\nSuccess! Found the following approved CRs:")
-                    for rp, r4 in approved_crs:
-                        print(f"  RP: {rp}, R4: {r4}")
-                else:
-                    print("\nSuccess! File was processed, but no approved CRs were found for this spec.")
-                
-                # Stop the test after the first successful processing
-                print("--- Test complete --- ")
-                break # Exit the loop
-            else:
-                print(f"Skipping folder. No accessible Excel file found.")
-        else: # This else belongs to the for loop, executed if the loop finishes without break
-            print("Test finished: Went through all folders but could not find any valid Excel sheets to process.")
+    # Target the specific folder and pair for the test
+    test_folder_url = "https://www.3gpp.org/ftp/tsg_ran/TSG_RAN/TSGR_109/"
+    test_rp = "RP-252378"
+    test_r4 = "R4-2511059"
+    specific_pair_test_and_save(test_folder_url, test_rp, test_r4)
