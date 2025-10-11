@@ -1,0 +1,26 @@
+body {
+    padding-top: 20px;
+}
+
+.container {
+    max-width: 800px;
+}
+
+.progress-container {
+    display: none;
+}
+
+#logs {
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+.progress-bar.bg-light-green {
+    background-color: #28a745 !important;
+}

@@ -6,3 +6,8 @@ __pycache__/
 # Temporary files
 temp_files/
 *.xlsx
+.DS_Store
+*.bak
+*.log
+progress.json
+results.json

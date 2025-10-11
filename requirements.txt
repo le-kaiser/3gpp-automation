@@ -3,3 +3,5 @@ beautifulsoup4
 pandas
 openpyxl
 python-docx
+Flask
+Flask-Cors
