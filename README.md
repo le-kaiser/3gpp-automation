@@ -1,5 +1,17 @@
 # 3GPP CR Automation Project
 
+## Current Status
+This project is actively being developed and refined to improve accuracy in detecting 3GPP Change Requests (CRs) that affect specific technical clauses. Recent improvements have focused on:
+
+- Enhanced error handling and logging
+- More robust document parsing and clause detection
+- Improved handling of complex archive structures
+- Better summary extraction from technical documents
+- Fixed data structure syntax errors
+- Removed duplicate code for better maintainability
+
+The script is currently operational and running with the latest improvements as of October 2025.
+
 ## 1. Project Objective
 
 This project automates the process of finding and verifying 3GPP Change Requests (CRs) that affect a specific set of technical clauses. The script browses the 3GPP FTP server, downloads relevant meeting documents, parses them to find approved CRs, and then cross-references those CRs against a local database of clauses to find relevant changes.
@@ -62,3 +74,23 @@ The following variables can be easily modified at the top of `main.py` to change
     ```
 
 The script will print its progress to the console and will generate the `approved_clauses.xlsx` file upon completion if any matches are found.
+
+## 6. Recent Progress and Improvements
+
+### Key Updates Made:
+- **Enhanced Error Handling**: Improved error handling for file downloads, ZIP extraction, and document processing with better logging
+- **Improved Document Processing**: Enhanced logic for finding clauses in complex document structures with better regex patterns
+- **Better Summary Extraction**: Advanced logic to locate and extract "Summary of change" sections more accurately
+- **Nesting Support**: Added support for nested ZIP files containing the target .docx documents
+- **Timestamped Logging**: Updated logging system to include timestamps for better progress tracking
+- **Fixed Data Structure Issue**: Corrected syntax error in CLAUSES_DATABASE set where a comma was missing
+- **Removed Duplicate Code**: Eliminated duplicate function definitions to improve maintainability
+- **Enhanced Progress Tracking**: Added detailed progress reporting showing completed vs pending tasks
+- **Robust Archive Processing**: Improved handling of various archive structures and file naming conventions
+
+### Technical Improvements:
+- More sophisticated clause matching algorithm that handles various formatting and spacing issues
+- Better handling of case-insensitive matching and whitespace normalization
+- Improved detection of clause numbers in different document sections
+- Enhanced cleanup of temporary files after processing
+- More resilient download mechanisms with timeout handling
