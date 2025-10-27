@@ -24,3 +24,8 @@ body {
 .progress-bar.bg-light-green {
     background-color: #28a745 !important;
 }
+
+#export-sheet {
+    background-color: #006400;
+    border-color: #006400;
+}

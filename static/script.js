@@ -15,6 +15,7 @@ $(document).ready(function() {
                 clearInterval(progressInterval);
                 clearInterval(logsInterval);
                 clearInterval(resultsInterval);
+                $("#export-sheet").prop("disabled", false);
             }
         });
     }
@@ -70,5 +71,10 @@ $(document).ready(function() {
                 alert("Error starting tracking: " + xhr.responseText);
             }
         });
+    });
+
+    $("#export-sheet").click(function() {
+        var wb = XLSX.utils.table_to_book(document.querySelector('#results-container .table-bordered'), {sheet:"Results"});
+        XLSX.writeFile(wb, "3gpp_results.xlsx");
     });
 });

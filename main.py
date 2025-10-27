@@ -13,6 +13,7 @@ import re
 logging.basicConfig(filename='tracker.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 BASE_URL = "https://www.3gpp.org/ftp/tsg_ran/TSG_RAN"
 SPEC_NUMBER = "38.101-1"
+ACCEPTED_ALPHABETS = {'A', 'D', 'F', 'G', 'I', 'J'}
 # Using a set for efficient lookups
 CLAUSES_DATABASE = {'4.3', '5.1', '5.2', '5.3.1', '5.3.2', '5.3.3', '5.3.5', '6.3.2', '6.3.3', '6.3.3.1', '6.3.3.2', '6.5.1', '6.5.2.2', '6.5.2.1', '6.5.2.3', '6.5.2.4','6.5.2.3.1', '6.5.2.3.2', '6.5.2.3.3', '6.5.2.3.4', '6.5.2.3.7', '6.5.2.3.8', '6.5.2.3.9', '6.4' , '6.4.1', '6.4.2', '6.4.2.0', '6.4.2.1', '6.4.2.1a', '6.4.2.2', '6.4.2.3', '6.4.2.4', '6.4.2.4.1', '6.4.2.4.2','6.4.2.5', 'A.3','C.2','F.0','F.1','F.2','F.3','F.4','F.5','F.5.1','F.5.2','F.5.3','F.5.4','F.5.5','F.6','F.7','F.8','F.9', 'F.10', '6.5.1', '6.5.2.4'} 
 OUTPUT_FILE = "approved_clauses.xlsx"
@@ -179,9 +180,9 @@ def filter_approved_crs(excel_path, spec_number):
         traceback.print_exc()
         return []
 
-def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db, j, total_crs_to_process):
+def download_rp_archive(docs_url, rp_number):
     """
-    Downloads the RP archive, extracts the R4 doc, and triggers the search.
+    Downloads the RP archive if it doesn't exist locally.
     """
     if not rp_number or not isinstance(rp_number, str):
         logging.warning(f"Invalid rp_number: {rp_number}")
@@ -189,15 +190,17 @@ def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db, j, total_cr
 
     zip_url = urljoin(docs_url, rp_number + '.zip')
     zip_local_path = os.path.join(TEMP_DIR, rp_number + '.zip')
-    extracted_docx_path = None
-    result = None  # Changed from is_relevant to result to handle tuple
+
+    if os.path.exists(zip_local_path):
+        logging.info(f"Archive already downloaded: {zip_local_path}")
+        return zip_local_path
 
     try:
         # Download the zip file with a longer timeout
         logging.info(f"Downloading archive: {zip_url}")
         response = requests.get(zip_url, stream=True, timeout=60)  # 60 second timeout
         response.raise_for_status()
-        
+
         with open(zip_local_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:  # Filter out keep-alive chunks
@@ -207,17 +210,36 @@ def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db, j, total_cr
         logging.info(f"Verifying downloaded archive.")
         if os.path.getsize(zip_local_path) == 0:
             logging.error(f"Error: Downloaded file is empty: {zip_local_path}")
+            os.remove(zip_local_path) # remove empty file
             return None
         
-        # Process the downloaded zip file
+        return zip_local_path
+
+    except requests.exceptions.Timeout:
+        logging.error(f"Timeout occurred while downloading {zip_url}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to download {zip_url}. Error: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"An unexpected error occurred in download_rp_archive: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def search_in_archive(zip_local_path, r4_doc_name, clauses_db, j):
+    """
+    Extracts the R4 doc from the archive and triggers the search.
+    """
+    extracted_docx_path = None
+    result = None
+
+    try:
         with zipfile.ZipFile(zip_local_path) as z:
             target_docx_name = r4_doc_name + '.docx'
             file_in_zip = None
             # Find a case-insensitive match for the docx file
-            # Modified to search for the R4 document name anywhere in the filename
             for name in z.namelist():
-                # Check if the R4 document name is contained in the filename
-                # This handles cases like "38101-1_CR2917_(Rel-19)_R4-2509864_BasedOnCatFRev.docx"
                 if r4_doc_name.lower() in name.lower() and name.lower().endswith('.docx'):
                     file_in_zip = name
                     break
@@ -231,16 +253,13 @@ def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db, j, total_cr
                 zip_files_in_zip = [name for name in z.namelist() if name.lower().endswith('.zip')]
                 docx_found = False
                 
-                # If we find .zip files, extract and process them
                 for zip_file in zip_files_in_zip:
                     logging.info(f"Found inner zip file {zip_file}. Extracting...")
                     extracted_inner_zip_path = z.extract(zip_file, path=TEMP_DIR)
                     
-                    # Process the inner zip file
                     try:
                         with zipfile.ZipFile(extracted_inner_zip_path) as inner_z:
                             for name in inner_z.namelist():
-                                # Check if the R4 document name is contained in the filename
                                 if r4_doc_name.lower() in name.lower() and name.lower().endswith('.docx'):
                                     logging.info(f"Found {name} in inner zip file. Extracting...")
                                     extracted_docx_path = inner_z.extract(name, path=TEMP_DIR)
@@ -250,52 +269,55 @@ def process_rp_archive(docs_url, rp_number, r4_doc_name, clauses_db, j, total_cr
                     except Exception as inner_e:
                         logging.error(f"Error processing inner zip file {zip_file}: {inner_e}")
                     
-                    # Clean up the inner zip file
                     if os.path.exists(extracted_inner_zip_path):
                         try:
                             os.remove(extracted_inner_zip_path)
                         except:
-                            pass  # Ignore errors
+                            pass
                     
                     if docx_found:
                         break
                 
                 if not docx_found:
                     logging.warning(f"Could not find {target_docx_name} in {zip_local_path}")
-                    # List available files for debugging
                     logging.info(f"Available files in archive: {z.namelist()}")
 
-    except requests.exceptions.Timeout:
-        logging.error(f"Timeout occurred while downloading {zip_url}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download {zip_url}. Error: {e}")
     except zipfile.BadZipFile:
         logging.error(f"Error: {zip_local_path} is not a valid zip file.")
-        # Let's check the file content
-        try:
-            with open(zip_local_path, 'rb') as f:
-                first_bytes = f.read(100)
-                logging.info(f"First 100 bytes of file: {first_bytes}")
-        except Exception as e:
-            logging.error(f"Could not read file for debugging: {e}")
     except Exception as e:
-        logging.error(f"An unexpected error occurred in process_rp_archive: {e}")
+        logging.error(f"An unexpected error occurred in search_in_archive: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        # Clean up extracted and downloaded files
         if extracted_docx_path and os.path.exists(extracted_docx_path):
             try:
                 os.remove(extracted_docx_path)
             except:
-                pass  # Ignore errors when removing extracted file
-        if os.path.exists(zip_local_path):
-            try:
-                os.remove(zip_local_path)
-            except:
-                pass  # Ignore errors when removing zip file
+                pass
             
-    return result  # Return the result (either tuple or None)
+    return result
+
+def is_variation(doc_clause, db_clause, accepted_alphabets):
+    if doc_clause == db_clause:
+        return True
+    
+    i = 0
+    j = 0
+    while i < len(doc_clause) and j < len(db_clause):
+        if doc_clause[i] == db_clause[j]:
+            i += 1
+            j += 1
+        elif doc_clause[i].upper() in accepted_alphabets:
+            i += 1
+        else:
+            return False
+            
+    while i < len(doc_clause):
+        if doc_clause[i].upper() not in accepted_alphabets:
+            return False
+        i += 1
+        
+    return j == len(db_clause)
 
 def search_docx_for_clauses(docx_path, clauses_db, j):
     """
@@ -338,12 +360,13 @@ def search_docx_for_clauses(docx_path, clauses_db, j):
                 found_clauses = re.findall(r'[\d\w\.]+\.[\d\w]+', search_area)
                 
                 for clause in found_clauses:
-                    # Clean up the extracted clause number
                     cleaned_clause = clause.strip('., ')
-                    if cleaned_clause in clauses_db:
-                        logging.info(f"Found matching clause: {cleaned_clause}")
-                        if cleaned_clause not in [pc[0] for pc in potential_clauses]:  # Avoid duplicates
-                            potential_clauses.append((cleaned_clause, i))  # Store with index for context
+                    for db_clause in clauses_db:
+                        if is_variation(cleaned_clause, db_clause, ACCEPTED_ALPHABETS):
+                            logging.info(f"Found matching clause: {cleaned_clause} (variation of: {db_clause})")
+                            if cleaned_clause not in [pc[0] for pc in potential_clauses]:
+                                potential_clauses.append((cleaned_clause, i))
+                            break
 
         # If we found matching clauses, now look for the summary
         if potential_clauses:
@@ -411,7 +434,7 @@ def search_docx_for_clauses(docx_path, clauses_db, j):
             # Return the first matching clause and its associated summary
             return (potential_clauses[0][0], summary_of_change)
         
-        return None  # Return None if no match found
+        return None
 
     except Exception as e:
         logging.error(f"Error reading docx file {docx_path}: {e}")
@@ -477,7 +500,8 @@ def run_spec_tracking(spec_number, progress_callback, results_callback):
     progress_callback(5)
 
     all_matches = []
-    
+    downloaded_rps = set()
+
     # Process folders one by one, stopping after the first success
     for i, folder_href in enumerate(meeting_folders):
         logging.info(f"Processing folder {i+1}/{len(meeting_folders)}: {folder_href}")
@@ -495,8 +519,6 @@ def run_spec_tracking(spec_number, progress_callback, results_callback):
             logging.info(f"No relevant CRs found in the Excel file from {docs_url}, skipping...")
             continue
 
-        # If we've reached here, we have found an Excel file with relevant CRs.
-        # We will process this folder and then stop.
         logging.info(f"Found {len(relevant_crs)} relevant CRs. Processing this folder and then stopping.")
         
         total_crs_to_process = len(relevant_crs)
@@ -504,7 +526,20 @@ def run_spec_tracking(spec_number, progress_callback, results_callback):
 
         for j, (rp_number, r4_doc_name) in enumerate(relevant_crs):
             logging.info(f"Processing CR {j+1}/{total_crs_to_process} - RP: {rp_number}, R4: {r4_doc_name}")
-            result = process_rp_archive(docs_url, rp_number, r4_doc_name, CLAUSES_DATABASE, j, total_crs_to_process)
+            
+            zip_local_path = None
+            if rp_number not in downloaded_rps:
+                zip_local_path = download_rp_archive(docs_url, rp_number)
+                if zip_local_path:
+                    downloaded_rps.add(rp_number)
+            else:
+                zip_local_path = os.path.join(TEMP_DIR, rp_number + '.zip')
+
+            if zip_local_path:
+                result = search_in_archive(zip_local_path, r4_doc_name, CLAUSES_DATABASE, j)
+            else:
+                result = None
+
             processed_crs += 1
             progress = 5 + int((processed_crs / total_crs_to_process) * 95)  # Progress from 5% to 100%
             progress_callback(progress)
